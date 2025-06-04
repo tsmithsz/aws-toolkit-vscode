@@ -13,6 +13,10 @@ export function getNodeExecutableName(): string {
     return process.platform === 'win32' ? 'node.exe' : 'node'
 }
 
+export function getRgExecutableName(): string {
+    return process.platform === 'win32' ? 'rg.exe' : 'rg'
+}
+
 /**
  * Get a json payload that will be sent to the language server, who is waiting to know what the encryption key is.
  * Code reference: https://github.com/aws/language-servers/blob/7da212185a5da75a72ce49a1a7982983f438651a/client/vscode/src/credentialsActivation.ts#L77
@@ -29,19 +33,22 @@ function getEncryptionInit(key: Buffer): string {
 /**
  * Checks that we can actually run the `node` executable and execute code with it.
  */
-export async function validateNodeExe(nodePath: string, lsp: string, args: string[], logger: Logger) {
+export async function validateNodeExe(nodePath: string[], lsp: string, args: string[], logger: Logger) {
+    const bin = nodePath[0]
     // Check that we can start `node` by itself.
-    const proc = new ChildProcess(nodePath, ['-e', 'console.log("ok " + process.version)'], { logging: 'no' })
+    const proc = new ChildProcess(bin, [...nodePath.slice(1), '-e', 'console.log("ok " + process.version)'], {
+        logging: 'no',
+    })
     const r = await proc.run()
     const ok = r.exitCode === 0 && r.stdout.includes('ok')
     if (!ok) {
         const msg = `failed to run basic "node -e" test (exitcode=${r.exitCode}): ${proc.toString(false, true)}`
         logger.error(msg)
-        throw new ToolkitError(`amazonqLsp: ${msg}`)
+        throw new ToolkitError(`amazonqLsp: ${msg}`, { code: 'FailedToRunNode' })
     }
 
     // Check that we can start `node …/lsp.js --stdio …`.
-    const lspProc = new ChildProcess(nodePath, [lsp, ...args], { logging: 'no' })
+    const lspProc = new ChildProcess(bin, [...nodePath.slice(1), lsp, ...args], { logging: 'no' })
     try {
         // Start asynchronously (it never stops; we need to stop it below).
         lspProc.run().catch((e) => logger.error('failed to run: %s', lspProc.toString(false, true)))
@@ -65,7 +72,8 @@ export async function validateNodeExe(nodePath: string, lsp: string, args: strin
         })
         if (!ok2 || selfExit) {
             throw new ToolkitError(
-                `amazonqLsp: failed to run (exitcode=${lspProc.exitCode()}): ${lspProc.toString(false, true)}`
+                `amazonqLsp: failed to run (exitcode=${lspProc.exitCode()}): ${lspProc.toString(false, true)}`,
+                { code: 'FailedToStartLanguageServer' }
             )
         }
     } finally {
@@ -78,18 +86,21 @@ export function createServerOptions({
     executable,
     serverModule,
     execArgv,
+    warnThresholds,
 }: {
     encryptionKey: Buffer
-    executable: string
+    executable: string[]
     serverModule: string
     execArgv: string[]
+    warnThresholds?: { cpu?: number; memory?: number }
 }) {
     return async () => {
-        const args = [serverModule, ...execArgv]
+        const bin = executable[0]
+        const args = [...executable.slice(1), serverModule, ...execArgv]
         if (isDebugInstance()) {
             args.unshift('--inspect=6080')
         }
-        const lspProcess = new ChildProcess(executable, args)
+        const lspProcess = new ChildProcess(bin, args, { warnThresholds })
 
         // this is a long running process, awaiting it will never resolve
         void lspProcess.run()
