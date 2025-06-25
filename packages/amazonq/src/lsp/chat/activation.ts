@@ -6,8 +6,12 @@
 import { window } from 'vscode'
 import { LanguageClient } from 'vscode-languageclient'
 import { AmazonQChatViewProvider } from './webviewProvider'
-import { registerCommands } from './commands'
-import { registerLanguageServerEventListener, registerMessageListeners } from './messages'
+import { focusAmazonQPanel, registerCommands } from './commands'
+import {
+    registerActiveEditorChangeListener,
+    registerLanguageServerEventListener,
+    registerMessageListeners,
+} from './messages'
 import { Commands, getLogger, globals, undefinedIfEmpty } from 'aws-core-vscode/shared'
 import { activate as registerLegacyChatListeners } from '../../app/chat/activation'
 import { DefaultAmazonQAppInitContext } from 'aws-core-vscode/amazonq'
@@ -17,7 +21,7 @@ import { pushConfigUpdate } from '../config'
 export async function activate(languageClient: LanguageClient, encryptionKey: Buffer, mynahUIPath: string) {
     const disposables = globals.context.subscriptions
 
-    const provider = new AmazonQChatViewProvider(mynahUIPath)
+    const provider = new AmazonQChatViewProvider(mynahUIPath, languageClient)
 
     disposables.push(
         window.registerWebviewViewProvider(AmazonQChatViewProvider.viewType, provider, {
@@ -33,6 +37,7 @@ export async function activate(languageClient: LanguageClient, encryptionKey: Bu
      **/
     registerCommands(provider)
     registerLanguageServerEventListener(languageClient, provider)
+    registerActiveEditorChangeListener(languageClient)
 
     provider.onDidResolveWebview(() => {
         const disposable = DefaultAmazonQAppInitContext.instance.getAppsToWebViewMessageListener().onMessage((msg) => {
@@ -72,6 +77,18 @@ export async function activate(languageClient: LanguageClient, encryptionKey: Bu
                 type: 'customization',
                 customization: undefinedIfEmpty(getSelectedCustomization().arn),
             })
+        }),
+        Commands.register('aws.amazonq.manageSubscription', () => {
+            focusAmazonQPanel().catch((e) => languageClient.error(`[VSCode Client] focusAmazonQPanel() failed`))
+
+            languageClient
+                .sendRequest('workspace/executeCommand', {
+                    command: 'aws/chat/manageSubscription',
+                    // arguments: [],
+                })
+                .catch((e) => {
+                    getLogger('amazonqLsp').error('failed request: aws/chat/manageSubscription: %O', e)
+                })
         }),
         globals.logOutputChannel.onDidChangeLogLevel((logLevel) => {
             getLogger('amazonqLsp').info(`Local log level changed to ${logLevel}, notifying LSP`)

@@ -18,7 +18,12 @@ import {
     ResponseMessage,
     WorkspaceFolder,
 } from '@aws/language-server-runtimes/protocol'
-import { AuthUtil, CodeWhispererSettings, getSelectedCustomization } from 'aws-core-vscode/codewhisperer'
+import {
+    AuthUtil,
+    CodeWhispererSettings,
+    getSelectedCustomization,
+    TelemetryHelper,
+} from 'aws-core-vscode/codewhisperer'
 import {
     Settings,
     createServerOptions,
@@ -33,21 +38,40 @@ import {
     isAmazonLinux2,
     getClientId,
     extensionVersion,
+    isSageMaker,
 } from 'aws-core-vscode/shared'
 import { processUtils } from 'aws-core-vscode/shared'
 import { activate } from './chat/activation'
 import { AmazonQResourcePaths } from './lspInstaller'
 import { ConfigSection, isValidConfigSection, pushConfigUpdate, toAmazonQLSPLogLevel } from './config'
+import { activate as activateInlineChat } from '../inlineChat/activation'
 import { telemetry } from 'aws-core-vscode/telemetry'
+import { SessionManager } from '../app/inline/sessionManager'
+import { LineTracker } from '../app/inline/stateTracker/lineTracker'
+import { InlineTutorialAnnotation } from '../app/inline/tutorials/inlineTutorialAnnotation'
+import { InlineChatTutorialAnnotation } from '../app/inline/tutorials/inlineChatTutorialAnnotation'
 
 const localize = nls.loadMessageBundle()
 const logger = getLogger('amazonqLsp.lspClient')
 
-export const glibcLinker: string = process.env.VSCODE_SERVER_CUSTOM_GLIBC_LINKER || ''
-export const glibcPath: string = process.env.VSCODE_SERVER_CUSTOM_GLIBC_PATH || ''
-
 export function hasGlibcPatch(): boolean {
-    return glibcLinker.length > 0 && glibcPath.length > 0
+    // Skip GLIBC patching for SageMaker environments
+    if (isSageMaker()) {
+        getLogger('amazonqLsp').info('SageMaker environment detected in hasGlibcPatch, skipping GLIBC patching')
+        return false // Return false to ensure SageMaker doesn't try to use GLIBC patching
+    }
+
+    // Check for environment variables (for CDM)
+    const glibcLinker = process.env.VSCODE_SERVER_CUSTOM_GLIBC_LINKER || ''
+    const glibcPath = process.env.VSCODE_SERVER_CUSTOM_GLIBC_PATH || ''
+
+    if (glibcLinker.length > 0 && glibcPath.length > 0) {
+        getLogger('amazonqLsp').info('GLIBC patching environment variables detected')
+        return true
+    }
+
+    // No environment variables, no patching needed
+    return false
 }
 
 export async function startLanguageServer(
@@ -72,9 +96,24 @@ export async function startLanguageServer(
     const traceServerEnabled = Settings.instance.isSet(`${clientId}.trace.server`)
     let executable: string[] = []
     // apply the GLIBC 2.28 path to node js runtime binary
-    if (isAmazonLinux2() && hasGlibcPatch()) {
-        executable = [glibcLinker, '--library-path', glibcPath, resourcePaths.node]
-        getLogger('amazonqLsp').info(`Patched node runtime with GLIBC to ${executable}`)
+    if (isSageMaker()) {
+        // SageMaker doesn't need GLIBC patching
+        getLogger('amazonqLsp').info('SageMaker environment detected, skipping GLIBC patching')
+        executable = [resourcePaths.node]
+    } else if (isAmazonLinux2() && hasGlibcPatch()) {
+        // Use environment variables if available (for CDM)
+        if (process.env.VSCODE_SERVER_CUSTOM_GLIBC_LINKER && process.env.VSCODE_SERVER_CUSTOM_GLIBC_PATH) {
+            executable = [
+                process.env.VSCODE_SERVER_CUSTOM_GLIBC_LINKER,
+                '--library-path',
+                process.env.VSCODE_SERVER_CUSTOM_GLIBC_PATH,
+                resourcePaths.node,
+            ]
+            getLogger('amazonqLsp').info(`Patched node runtime with GLIBC using env vars to ${executable}`)
+        } else {
+            // No environment variables, use the node executable directly
+            executable = [resourcePaths.node]
+        }
     } else {
         executable = [resourcePaths.node]
     }
@@ -123,6 +162,8 @@ export async function startLanguageServer(
                 awsClientCapabilities: {
                     q: {
                         developerProfiles: true,
+                        pinnedContextEnabled: true,
+                        mcp: true,
                     },
                     window: {
                         notifications: true,
@@ -163,7 +204,7 @@ export async function startLanguageServer(
 
     const auth = await initializeAuth(client)
 
-    await onLanguageServerReady(auth, client, resourcePaths, toDispose)
+    await onLanguageServerReady(extensionContext, auth, client, resourcePaths, toDispose)
 
     return client
 }
@@ -175,24 +216,26 @@ async function initializeAuth(client: LanguageClient): Promise<AmazonQLspAuth> {
 }
 
 async function onLanguageServerReady(
+    extensionContext: vscode.ExtensionContext,
     auth: AmazonQLspAuth,
     client: LanguageClient,
     resourcePaths: AmazonQResourcePaths,
     toDispose: vscode.Disposable[]
 ) {
-    if (Experiments.instance.get('amazonqLSPInline', false)) {
-        const inlineManager = new InlineCompletionManager(client)
-        inlineManager.registerInlineCompletion()
-        toDispose.push(
-            inlineManager,
-            Commands.register({ id: 'aws.amazonq.invokeInlineCompletion', autoconnect: true }, async () => {
-                await vscode.commands.executeCommand('editor.action.inlineSuggest.trigger')
-            }),
-            vscode.workspace.onDidCloseTextDocument(async () => {
-                await vscode.commands.executeCommand('aws.amazonq.rejectCodeSuggestion')
-            })
-        )
-    }
+    const sessionManager = new SessionManager()
+
+    // keeps track of the line changes
+    const lineTracker = new LineTracker()
+
+    // tutorial for inline suggestions
+    const inlineTutorialAnnotation = new InlineTutorialAnnotation(lineTracker, sessionManager)
+
+    // tutorial for inline chat
+    const inlineChatTutorialAnnotation = new InlineChatTutorialAnnotation(inlineTutorialAnnotation)
+
+    const inlineManager = new InlineCompletionManager(client, sessionManager, lineTracker, inlineTutorialAnnotation)
+    inlineManager.registerInlineCompletion()
+    activateInlineChat(extensionContext, client, encryptionKey, inlineChatTutorialAnnotation)
 
     if (Experiments.instance.get('amazonqChatLSP', true)) {
         await activate(client, encryptionKey, resourcePaths.ui)
@@ -213,6 +256,38 @@ async function onLanguageServerReady(
     }
 
     toDispose.push(
+        inlineManager,
+        Commands.register({ id: 'aws.amazonq.invokeInlineCompletion', autoconnect: true }, async () => {
+            await vscode.commands.executeCommand('editor.action.inlineSuggest.trigger')
+        }),
+        Commands.register('aws.amazonq.refreshAnnotation', async (forceProceed: boolean) => {
+            telemetry.record({
+                traceId: TelemetryHelper.instance.traceId,
+            })
+
+            const editor = vscode.window.activeTextEditor
+            if (editor) {
+                if (forceProceed) {
+                    await inlineTutorialAnnotation.refresh(editor, 'codewhisperer', true)
+                } else {
+                    await inlineTutorialAnnotation.refresh(editor, 'codewhisperer')
+                }
+            }
+        }),
+        Commands.register('aws.amazonq.dismissTutorial', async () => {
+            const editor = vscode.window.activeTextEditor
+            if (editor) {
+                inlineTutorialAnnotation.clear()
+                try {
+                    telemetry.ui_click.emit({ elementId: `dismiss_${inlineTutorialAnnotation.currentState.id}` })
+                } catch (_) {}
+                await inlineTutorialAnnotation.dismissTutorial()
+                getLogger().debug(`codewhisperer: user dismiss tutorial.`)
+            }
+        }),
+        vscode.workspace.onDidCloseTextDocument(async () => {
+            await vscode.commands.executeCommand('aws.amazonq.rejectCodeSuggestion')
+        }),
         AuthUtil.instance.auth.onDidChangeActiveConnection(async () => {
             await auth.refreshConnection()
         }),

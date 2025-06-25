@@ -96,10 +96,11 @@ export function createServerOptions({
 }) {
     return async () => {
         const bin = executable[0]
-        const args = [...executable.slice(1), serverModule, ...execArgv]
+        const args = [...executable.slice(1), '--max-old-space-size=8196', serverModule, ...execArgv]
         if (isDebugInstance()) {
             args.unshift('--inspect=6080')
         }
+
         const lspProcess = new ChildProcess(bin, args, { warnThresholds })
 
         // this is a long running process, awaiting it will never resolve

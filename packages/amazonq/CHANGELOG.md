@@ -1,3 +1,43 @@
+## 1.79.0 2025-06-25
+
+- **Bug Fix** Added automatic system certificate detection and VSCode proxy settings support
+- **Bug Fix** Improved Amazon Linux 2 support with better SageMaker environment detection
+- **Feature** /transform: run all builds client-side
+
+## 1.78.0 2025-06-20
+
+- **Bug Fix** Resolve missing chat options in Amazon Q chat interface.
+
+## 1.77.0 2025-06-18
+
+- Miscellaneous non-user-facing changes
+
+## 1.76.0 2025-06-18
+
+- **Bug Fix** /transform: only show lines of code statistic in plan
+- **Feature** Add model selection feature
+- **Feature** Pin context items in chat and manage workspace rules
+
+## 1.75.0 2025-06-13
+
+- Miscellaneous non-user-facing changes
+
+## 1.74.0 2025-06-12
+
+- Miscellaneous non-user-facing changes
+
+## 1.73.0 2025-06-11
+
+- **Feature** Add MCP Server Support
+
+## 1.72.0 2025-06-11
+
+- **Feature** Launch LSP with bundled artifacts as fallback
+
+## 1.71.0 2025-06-04
+
+- Miscellaneous non-user-facing changes
+
 ## 1.70.0 2025-05-28
 
 - **Removal** Disable local workspace LSP

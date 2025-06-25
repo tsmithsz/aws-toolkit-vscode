@@ -34,6 +34,7 @@ import {
     Experiments,
     isSageMaker,
     isAmazonLinux2,
+    ProxyUtil,
 } from 'aws-core-vscode/shared'
 import { ExtStartUpSources } from 'aws-core-vscode/telemetry'
 import { VSCODE_EXTENSION_ID } from 'aws-core-vscode/utils'
@@ -119,6 +120,10 @@ export async function activateAmazonQCommon(context: vscode.ExtensionContext, is
     const extContext = {
         extensionContext: context,
     }
+
+    // Configure proxy settings early
+    await ProxyUtil.configureProxyForLanguageServer()
+
     // This contains every lsp agnostic things (auth, security scan, code scan)
     await activateCodeWhisperer(extContext as ExtContext)
     if (
@@ -129,7 +134,7 @@ export async function activateAmazonQCommon(context: vscode.ExtensionContext, is
         // for AL2, start LSP if glibc patch is found
         await activateAmazonqLsp(context)
     }
-    if (!Experiments.instance.get('amazonqLSPInline', false)) {
+    if (!Experiments.instance.get('amazonqLSPInline', true)) {
         await activateInlineCompletion()
     }
 
